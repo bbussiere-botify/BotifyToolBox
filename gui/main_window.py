@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 import pandas as pd
+import json
 
 from gui.web_components import CustomWebEnginePage, NetworkInterceptor
 from workers.thread_worker import GenericWorkerThread
@@ -64,6 +65,7 @@ class MainWindow(QMainWindow):
     def setup_connections(self):
         # Connecter les boutons aux fonctions
         self.ui.pushButton_open.clicked.connect(self.openFileDiablog)
+        self.ui.pushButton_open_2.clicked.connect(self.openFileDiablog)
         self.ui.pushButton_query.clicked.connect(self.extractQueryParam)
         self.ui.pushButton_keyword.clicked.connect(self.getUniqueKeyword)
         self.ui.pushButton_GoURL.clicked.connect(self.launchBrowser)
@@ -71,6 +73,7 @@ class MainWindow(QMainWindow):
         self.ui.pushButton_retrieve_robots.clicked.connect(self.retrieveRobots)
         self.ui.pushButton_check_robots.clicked.connect(self.check_urls_by_robots)
         self.ui.pushButton_json.clicked.connect(self.decryptBotifyFilter)
+        self.ui.pushButton_json_validate.clicked.connect(self.JSON_validation)
         self.save_button.clicked.connect(self.saveToFile)
 
     def run_long_task(self, task_function, *args, **kwargs):
@@ -110,7 +113,7 @@ class MainWindow(QMainWindow):
     def handle_task_error(self, error_message):
         self.progress_bar.setValue(0)
         self.progress_bar.hide()
-        self.ui.textBrowserOutput.append(f"Erreur: {error_message}")
+        self.ui.textBrowserOutput.append(f"Error: {error_message}")
 
     @Slot(str, int, str)
     def handle_console_message(self, message, level, source_id):
@@ -132,7 +135,7 @@ class MainWindow(QMainWindow):
     def saveFileDiablog(self):
         self.fileOutput, _ = QFileDialog.getSaveFileName(
             self, "Save File", "",
-            "CSV File (*.csv);;Text File (*.txt);;All Files (*)"
+            "CSV File (*.csv);;Text File (*.txt);;JSON File (*.json);;All Files (*)"
         )
 
     def saveToFile(self):
@@ -180,7 +183,7 @@ class MainWindow(QMainWindow):
             self.ui.textBrowserOutput.clear()
             self.web_view.setUrl(QUrl(self.ui.lineEditURL.text().strip()))
         else:
-            self.ui.textBrowserOutput.append("Please enter an URL")
+            self.ui.textBrowserOutput.append("Please enter a URL")
 
     def get_resources(self, ok):
         if ok:
@@ -202,12 +205,35 @@ class MainWindow(QMainWindow):
     def launchSitemap(self):
         if self.ui.lineEdit_sitemap.text().strip():
             self.ui.textBrowserOutput.clear()
-            self.run_long_task(
+            self.ui.textBrowserOutput.append("Analyzing sitemap...")
+            
+            def on_sitemap_result(result):
+                if isinstance(result, str):
+                    # Si le résultat contient des tabulations, on utilise une police monospace
+                    if "\t" in result:
+                        formatted_result = result.replace("\n", "<br>").replace("\t", "&nbsp;&nbsp;&nbsp;&nbsp;")
+                        self.ui.textBrowserOutput.setHtml(
+                            f'<pre style="font-family: Courier, monospace;">{formatted_result}</pre>'
+                        )
+                    else:
+                        self.ui.textBrowserOutput.setPlainText(result)
+
+            # Connecter le signal de mise à jour du texte
+            self.worker_thread = GenericWorkerThread(
                 WebAnalyzer.analyze_sitemap,
                 self.ui.lineEdit_sitemap.text().strip()
             )
+            self.worker_thread.update_progress.connect(self.update_progress_bar)
+            self.worker_thread.calculation_finished.connect(on_sitemap_result)
+            self.worker_thread.error_occurred.connect(self.handle_task_error)
+            self.worker_thread.update_text.connect(self.update_text_browser)
+            
+            # Démarrer l'analyse
+            self.progress_bar.setValue(0)
+            self.progress_bar.show()
+            self.worker_thread.start()
         else:
-            self.ui.textBrowserOutput.append("Please enter an URL for the sitemap")
+            self.ui.textBrowserOutput.append("Please enter a sitemap URL")
 
     # Robots.txt Methods
     def retrieveRobots(self):
@@ -216,7 +242,7 @@ class MainWindow(QMainWindow):
             robots_content = WebAnalyzer.analyze_robots_txt(self.ui.lineEdit_rob.text().strip())
             self.ui.plainTextEdit_rules.setPlainText(robots_content)
         else:
-            self.ui.textBrowserOutput.append("Please enter an URL for the robots.txt")
+            self.ui.textBrowserOutput.append("Please enter a URL for the robots.txt")
 
     def check_urls_by_robots(self):
         urls = self.ui.plainTextEdit_urls.toPlainText().strip().split('\n')
@@ -229,7 +255,7 @@ class MainWindow(QMainWindow):
 
         results = WebAnalyzer.check_urls_against_robots(urls, robots_content, user_agent)
         self.ui.textBrowserOutput.clear()
-        self.ui.textBrowserOutput.append("Résultats de la vérification :")
+        self.ui.textBrowserOutput.append("Verification results:")
         self.ui.textBrowserOutput.append("")
         
         for url, is_allowed in results:
@@ -242,7 +268,7 @@ class MainWindow(QMainWindow):
     def decryptBotifyFilter(self):
         url = self.ui.lineEdit_burl.text().strip()
         if not url:
-            self.ui.textBrowserOutput.append("Veuillez entrer une URL Botify avec des filtres")
+            self.ui.textBrowserOutput.append("Please enter a Botify URL with filters")
             return
 
         self.ui.textBrowserOutput.clear()
@@ -254,3 +280,62 @@ class MainWindow(QMainWindow):
             self.ui.textBrowserOutput.setHtml(f"<pre>{formatted_result}</pre>")
         else:
             self.ui.textBrowserOutput.append(result) 
+
+    def JSON_validation(self):
+        json_text = self.ui.plainTextEdit_json.toPlainText().strip()
+        if not json_text:
+            self.ui.textBrowserOutput.append("Please enter JSON content to validate")
+            return
+        
+        try:
+            # Parser le JSON pour vérifier sa validité
+            json_data = json.loads(json_text)
+            
+            # Re-formater le JSON avec une indentation propre
+            formatted_json = json.dumps(json_data, indent=2, ensure_ascii=False)
+            
+            self.ui.textBrowserOutput.clear()
+
+            # Créer du HTML coloré pour l'affichage
+            html_content = self._format_json_html(formatted_json)
+            
+            self.ui.textBrowserOutput.setHtml(html_content)
+            
+        except json.JSONDecodeError as e:
+            error_message = f"Invalid JSON: {str(e)}"
+            self.ui.textBrowserOutput.append(f'<span style="color: red; font-weight: bold;">❌ {error_message}</span>')
+        except Exception as e:
+            error_message = f"Unexpected error: {str(e)}"
+            self.ui.textBrowserOutput.append(f'<span style="color: red; font-weight: bold;">❌ {error_message}</span>')
+
+    def _format_json_html(self, json_str):
+        """Formate le JSON avec des couleurs pour l'affichage HTML"""
+        import re
+        
+        # Remplacer les caractères spéciaux HTML
+        json_str = json_str.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        
+        # Appliquer les couleurs
+        # Clés (avant les deux points)
+        json_str = re.sub(r'(".*?")(\s*:)', r'<span style="color: #0066cc; font-weight: bold;">\1</span>\2', json_str)
+        
+        # Valeurs string (après les deux points)
+        json_str = re.sub(r':\s*(".*?")', r': <span style="color: #009900;">\1</span>', json_str)
+        
+        # Valeurs numériques
+        json_str = re.sub(r':\s*(\d+(?:\.\d+)?)', r': <span style="color: #cc6600;">\1</span>', json_str)
+        
+        # Valeurs booléennes
+        json_str = re.sub(r':\s*(true|false)', r': <span style="color: #990099;">\1</span>', json_str)
+        
+        # Valeurs null
+        json_str = re.sub(r':\s*(null)', r': <span style="color: #666666;">\1</span>', json_str)
+        
+        # Ajouter le style pour préserver les espaces et utiliser une police monospace
+        html_content = f'''
+        <div style="background-color: #f8f8f8; border: 1px solid #ddd; padding: 10px; border-radius: 4px;">
+            <pre style="font-family: 'Courier New', monospace; font-size: 12px; margin: 0; white-space: pre-wrap;">{json_str}</pre>
+        </div>
+        '''
+        
+        return html_content

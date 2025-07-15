@@ -19,11 +19,18 @@ class WebAnalyzer:
     @staticmethod
     def analyze_sitemap(sitemap_url, progress_callback=None):
         try:
+            if progress_callback:
+                progress_callback(10)  # Download started
+                
             response = requests.get(sitemap_url, headers=WebAnalyzer.get_headers())
             response.raise_for_status()
             
-            if 'xml' not in response.headers.get('content-type', '').lower():
-                return "Le contenu n'est pas un XML valide"
+            if progress_callback:
+                progress_callback(20)  # Download completed
+            
+            content_type = response.headers.get('content-type', '').lower()
+            if 'xml' not in content_type:
+                return f"Error: Content is not valid XML (Content-Type: {content_type})"
 
             root = ET.fromstring(response.content)
             namespaces = {
@@ -31,35 +38,58 @@ class WebAnalyzer:
                 'xhtml': 'http://www.w3.org/1999/xhtml'
             }
 
+            if progress_callback:
+                progress_callback(30)  # XML parsing completed
+
             results = ["URL\threflang URL\threflang\tSitemap"]
+            processed_urls = 0
+            total_progress_remaining = 70  # 70% remaining for processing
 
             if root.tag.endswith('sitemapindex'):
                 sitemaps = root.findall('sm:sitemap', namespaces)
                 total_sitemaps = len(sitemaps)
+                progress_per_sitemap = total_progress_remaining / (total_sitemaps or 1)
                 
                 for i, sitemap in enumerate(sitemaps, 1):
-                    sitemap_url = sitemap.find('sm:loc', namespaces).text
-                    sitemap_name = urlparse(sitemap_url).path.split('/')[-1]
-
                     try:
+                        sitemap_url = sitemap.find('sm:loc', namespaces).text
+                        sitemap_name = urlparse(sitemap_url).path.split('/')[-1]
+                        
+                        if progress_callback:
+                            progress_callback(30 + int(i * progress_per_sitemap))
+                            
                         sitemap_response = requests.get(sitemap_url, headers=WebAnalyzer.get_headers())
                         sitemap_response.raise_for_status()
                         sitemap_root = ET.fromstring(sitemap_response.content)
                         
-                        results.extend(WebAnalyzer.process_urlset(sitemap_root, sitemap_name, namespaces))
+                        new_results = WebAnalyzer.process_urlset(sitemap_root, sitemap_name, namespaces)
+                        results.extend(new_results)
+                        processed_urls += len(new_results)
                         
-                        if progress_callback:
-                            progress = int((i / total_sitemaps) * 100)
-                            progress_callback(progress)
                     except Exception as e:
-                        results.append(f"Erreur lors du traitement de {sitemap_url}: {str(e)}")
+                        results.append(f"Error processing {sitemap_url}: {str(e)}")
             else:
-                results.extend(WebAnalyzer.process_urlset(root, "main", namespaces))
+                new_results = WebAnalyzer.process_urlset(root, "main", namespaces)
+                results.extend(new_results)
+                processed_urls += len(new_results)
+                
+                if progress_callback:
+                    progress_callback(100)  # Processing completed
 
+            # Add summary
+            summary = f"\nSummary:\n{processed_urls} URLs processed"
+            if root.tag.endswith('sitemapindex'):
+                summary += f"\n{len(sitemaps)} sitemaps analyzed"
+            
+            results.append(summary)
             return "\n".join(results)
 
+        except requests.RequestException as e:
+            return f"HTTP request error: {str(e)}"
+        except ET.ParseError as e:
+            return f"XML parsing error: {str(e)}"
         except Exception as e:
-            return f"Erreur lors de l'analyse du sitemap: {str(e)}"
+            return f"Unexpected error: {str(e)}"
 
     @staticmethod
     def process_urlset(root, sitemap_name, namespaces):
@@ -77,7 +107,7 @@ class WebAnalyzer:
                 else:
                     results.append(f"{page_url}\t\t\t{sitemap_name}")
             except Exception as e:
-                results.append(f"Erreur lors du traitement d'une URL: {str(e)}")
+                results.append(f"Error processing URL: {str(e)}")
         return results
 
     @staticmethod
@@ -87,7 +117,7 @@ class WebAnalyzer:
             response.raise_for_status()
             return response.content.decode('utf-8')
         except Exception as e:
-            return f"Erreur lors de la récupération du robots.txt: {str(e)}"
+            return f"Error retrieving robots.txt: {str(e)}"
 
     @staticmethod
     def check_urls_against_robots(urls, robots_content, user_agent):
@@ -110,10 +140,10 @@ class WebAnalyzer:
         try:
             parsed_url = urlparse(url)
             if parsed_url.netloc != "app.botify.com":
-                return "Erreur: L'URL doit être une URL Botify (app.botify.com)"
+                return "Error: URL must be a Botify URL (app.botify.com)"
 
             if not parsed_url.query:
-                return "Erreur: Aucun paramètre de filtre trouvé dans l'URL"
+                return "Error: No filter parameters found in URL"
 
             query_params = parse_qs(parsed_url.query)
             results = []
@@ -124,7 +154,7 @@ class WebAnalyzer:
                     results.append("---Filters---")
                     results.append(json.dumps(filter_json, indent=4, ensure_ascii=False))
                 except json.JSONDecodeError:
-                    results.append("Erreur: Le filtre context n'est pas un JSON valide")
+                    results.append("Error: Context filter is not valid JSON")
 
             if 'explorerFilter' in query_params:
                 try:
@@ -132,14 +162,14 @@ class WebAnalyzer:
                     results.append("\n---Columns---")
                     results.append(json.dumps(columns_json, indent=4, ensure_ascii=False))
                 except json.JSONDecodeError:
-                    results.append("Erreur: Le filtre explorerFilter n'est pas un JSON valide")
+                    results.append("Error: Explorer filter is not valid JSON")
 
             if not results:
-                return "Aucun filtre trouvé dans l'URL"
+                return "No filters found in URL"
 
             return "\n".join(results)
         except Exception as e:
-            return f"Erreur lors du décodage du filtre: {str(e)}"
+            return f"Error decoding filter: {str(e)}"
 
     @staticmethod
     def extract_query_params(urls):

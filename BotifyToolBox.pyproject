@@ -1,0 +1,8 @@
+{
+    "files": [
+        "form.ui",
+        "gui/main_window.py",
+        "gui/web_components.py",
+        "main.py"
+    ]
+}
